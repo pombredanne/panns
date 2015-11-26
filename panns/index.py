@@ -18,9 +18,9 @@ import cPickle as pickle
 import multiprocessing
 
 try:
-    import h5py
-    import numpy
     from scipy import linalg
+    import numpy
+    import h5py
 except Exception, err:
     print 'Warning:', err
 
@@ -47,7 +47,6 @@ class PannsIndex():
         self.typ = dtype        # data type of data
         self.mtx = []           # list of row vectors
         self.btr = []           # list of binary-tree
-        self.prj = []           # list of proj-planes
         self.K = 20             # Need to be tweaked
         self.parallel = False
 
@@ -115,14 +114,10 @@ class PannsIndex():
             shape_mtx = (len(self.mtx), self.dim)
             mmap_mtx = make_mmap(self.mtx, shape_mtx, self.typ)
             self.mtx = load_mmap(mmap_mtx, shape_mtx, self.typ)
-        if not hasattr(self, 'prm') or type(self.prm) != numpy.memmap:
-            shape_prj = (len(self.prj), self.dim)
-            mmap_prj = make_mmap(self.prj, shape_prj, self.typ)
-            self.prm = load_mmap(mmap_prj, shape_prj, self.typ)
         pass
 
 
-    def build(self, c=50):
+    def build(self, c=64):
         """
         Build the index for a given data set using random projections.
         The index is a forest of binary trees
@@ -130,13 +125,11 @@ class PannsIndex():
         Parameters:
         c: the number of binary trees in the index.
         """
-        num_prj = int(2 ** (numpy.log2(len(self.mtx) / self.K) + 1))
-        self.prj = self.random_directions(num_prj)
         if self.parallel:
             self.mmap_core_data()
             num_cores = multiprocessing.cpu_count()
             pool = multiprocessing.Pool(num_cores)
-            tbtr = [ pool.apply_async(build_parallel, [self.mtx.filename, self.prm.filename, self.mtx.shape, self.prm.shape, self.K, self.typ, t]) for t in xrange(c) ]
+            tbtr = [ pool.apply_async(build_parallel, [self.mtx.filename, self.mtx.shape, self.K, self.typ, t]) for t in xrange(c) ]
             self.btr = [ r.get() for r in tbtr ]
             pool.terminate()
         else:
@@ -174,8 +167,8 @@ class PannsIndex():
             return
         l_child, r_child = None, None
         for attempt in xrange(16):
-            parent.proj = numpy.random.randint(len(self.prj))
-            u = self.prj[parent.proj]
+            parent.proj = numpy.random.randint(2**32-1)
+            u = self.random_direction(parent.proj)
             parent.ofst = self.metric.split(u, children, self.mtx)
             l_child, r_child = [], []
             for i in children:
@@ -224,7 +217,7 @@ class PannsIndex():
 
         if hasattr(p, 'nlst'):
             return p.nlst
-        t = numpy.dot(self.prj[p.proj], v) - p.ofst
+        t = numpy.dot(self.random_direction(p.proj), v) - p.ofst
         if t > 0:
             nns = self.get_ann(p.rchd, v, c)
             if len(nns) < c:
@@ -249,15 +242,15 @@ class PannsIndex():
         return u[:,:c].T
 
 
-    def random_directions(self, c):
+    def random_direction(self, seed):
         """
-        The function returns Gaussian random directions which are
-        used as projection plane.
+        The function returns a normalized random Gaussian vector
+        which is used as the projection plane.
 
         Parameters:
-        c: the number of principle components needed.
+        seed: random seed for generating the gaussian vector
         """
-        return [ gaussian_vector(self.dim, True, self.typ) for _ in xrange(c) ]
+        return gaussian_vector(self.dim, True, self.typ, seed)
 
 
     def get_samples(self, c):
@@ -296,8 +289,6 @@ class PannsIndex():
         """
         f = open(fname, 'wb')
         pickle.dump(self.get_basic_info(), f, -1)
-        logger.info('dump random vectors to %s ...' % fname)
-        pickle.dump(self.prj, f, -1)
         logger.info('dump binary trees to %s ...' % fname)
         for tree in self.btr:
             pickle.dump(tree, f, -1)
@@ -323,11 +314,7 @@ class PannsIndex():
         d = pickle.load(mm)
         self.set_basic_info(d)
 
-        # step 2, load the projection vectors
-        logger.info('loading random vectors from %s...' % fname)
-        self.prj = pickle.load(mm)
-
-        # setp 3, load the binary trees
+        # setp 2, load the binary trees
         logger.info('loading binary trees from %s ...' % fname)
         self.btr = []
         while True:
@@ -336,7 +323,7 @@ class PannsIndex():
             except:
                 break
 
-        # step 4, load the raw data set
+        # step 3, load the raw data set
         logger.info('loading raw dataset from %s ...' % (fname+'.npy'))
         try:
             self.mtx = numpy.load(fname+'.npy')

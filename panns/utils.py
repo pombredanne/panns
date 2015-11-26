@@ -104,13 +104,14 @@ class MetricCosine(Metric):
     pass
 
 
-def gaussian_vector(size, normalize=False, dtype='float32'):
+def gaussian_vector(size, normalize=False, dtype='float32', seed=None):
     """
     Returns a (normalized) Gaussian random vector.
 
     Parameters:
     normalize: the vector length is normalized to 1 if True.
     """
+    numpy.random.seed(seed)
     v = numpy.random.normal(0,1,size)
     if normalize:
         v = v / linalg.norm(v)
@@ -141,7 +142,7 @@ def recall(relevant, retrieved):
     return r
 
 
-def build_parallel(mtx, prj, shape_mtx, shape_prj, K, dtype, t):
+def build_parallel(mtx, shape_mtx, K, dtype, t):
     """
     The function for parallel building index. Implemented here because
     the default python serialization cannot pickle instance function.
@@ -153,15 +154,14 @@ def build_parallel(mtx, prj, shape_mtx, shape_prj, K, dtype, t):
     """
     logger.info('pass %i ...' % t)
     mtx = numpy.memmap(mtx, dtype=dtype, mode='r', shape=shape_mtx)
-    prj = numpy.memmap(prj, dtype=dtype, mode='r', shape=shape_prj)
-    numpy.random.seed(t**2)
+    numpy.random.seed(t**2 + numpy.random.randint(2**30))
     tree = NaiveTree()
     children = range(len(mtx))
-    make_tree_parallel(tree.root, children, mtx, prj, K)
+    make_tree_parallel(tree.root, children, mtx, shape_mtx[1], dtype, K)
     return tree
 
 
-def make_tree_parallel(parent, children, mtx, prj, K, lvl=0):
+def make_tree_parallel(parent, children, mtx, dim, dtype, K, lvl=0):
     """
     Builds up a binary tree recursively, for parallel building.
 
@@ -176,8 +176,8 @@ def make_tree_parallel(parent, children, mtx, prj, K, lvl=0):
         return
     l_child, r_child = None, None
     for attempt in xrange(16):
-        parent.proj = numpy.random.randint(len(prj))
-        u = prj[parent.proj]
+        parent.proj = numpy.random.randint(2**32-1)
+        u = gaussian_vector(dim, True, dtype, parent.proj)
         parent.ofst = Metric.split(u, children, mtx)
         l_child, r_child = [], []
         for i in children:
@@ -189,8 +189,8 @@ def make_tree_parallel(parent, children, mtx, prj, K, lvl=0):
                 break
     parent.lchd = Node()
     parent.rchd = Node()
-    make_tree_parallel(parent.lchd, l_child, mtx, prj, K)
-    make_tree_parallel(parent.rchd, r_child, mtx, prj, K)
+    make_tree_parallel(parent.lchd, l_child, mtx, dim, dtype, K)
+    make_tree_parallel(parent.rchd, r_child, mtx, dim, dtype, K)
     return
 
 
